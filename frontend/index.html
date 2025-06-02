@@ -1,0 +1,291 @@
+<!-- [index.html] -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Terraform Deployer</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background-color: #f2f2f2;
+      margin: 0;
+      padding: 0;
+      display: flex;
+    }
+
+    #sidebar {
+      width: 220px;
+      background-color: #fff;
+      border-right: 1px solid #ddd;
+      padding: 20px;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    #sidebar h3 {
+      margin-top: 0;
+    }
+
+    .module-item {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .module-item:hover {
+      background-color: #eee;
+    }
+
+    .module-item img {
+      width: 24px;
+      height: 24px;
+      margin-right: 10px;
+    }
+
+    #main {
+      flex: 1;
+      padding: 30px;
+    }
+
+    label {
+      display: block;
+      margin: 12px 0 4px;
+    }
+
+    input {
+      width: 300px;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+
+    input:invalid {
+      border-color: red;
+    }
+
+    button {
+      margin: 10px 8px 10px 0;
+      padding: 8px 16px;
+      background-color: #007acc;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #005fa3;
+    }
+
+    .accordion {
+      margin-top: 15px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .accordion summary {
+      background-color: #eee;
+      cursor: pointer;
+      padding: 10px 15px;
+      font-weight: bold;
+      user-select: none;
+    }
+
+    .console {
+      background: #1e1e1e;
+      color: #dcdcdc;
+      font-family: monospace;
+      font-size: 14px;
+      padding: 15px;
+      white-space: pre-wrap;
+      overflow-y: auto;
+      max-height: 300px;
+      border-top: 1px solid #ccc;
+    }
+
+    #status {
+      font-weight: bold;
+      margin: 15px 0;
+      color: green;
+    }
+
+    #progress-bar {
+      width: 100%;
+      height: 8px;
+      background-color: #ddd;
+      margin: 10px 0;
+    }
+
+    #progress-fill {
+      width: 0%;
+      height: 100%;
+      background-color: #007acc;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>Modules</h3>
+    <div id="module-list"></div>
+  </div>
+
+  <div id="main">
+    <h2 id="page-title">Select a module to begin</h2>
+
+    <form id="module-form"></form>
+    <button onclick="submitForm()">Save Config</button>
+    <button onclick="startStream('init')">Init</button>
+    <button onclick="startStream('plan')">Plan</button>
+    <button onclick="startStream('apply')">Apply</button>
+
+    <div id="status"></div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+
+    <details class="accordion" id="init-log">
+      <summary>Terraform Init</summary>
+      <div class="console" id="console-init"></div>
+    </details>
+    <details class="accordion" id="plan-log">
+      <summary>Terraform Plan</summary>
+      <div class="console" id="console-plan"></div>
+    </details>
+    <details class="accordion" id="apply-log">
+      <summary>Terraform Apply</summary>
+      <div class="console" id="console-apply"></div>
+    </details>
+  </div>
+
+  <script>
+    let selectedModule = null;
+
+    async function loadModules() {
+      const res = await fetch("http://127.0.0.1:5000/modules");
+      const modules = await res.json();
+      const container = document.getElementById("module-list");
+      container.innerHTML = "";
+
+      modules.forEach(mod => {
+        const div = document.createElement("div");
+        div.className = "module-item";
+        div.onclick = () => selectModule(mod);
+
+        const img = document.createElement("img");
+        img.src = `C:/Users/khanu/terraform-ui-deployer/static/logos/${mod}.png`;
+
+        const span = document.createElement("span");
+        span.textContent = mod.toUpperCase(); 
+
+        div.appendChild(img);
+        div.appendChild(span);
+        container.appendChild(div);
+      });
+    }
+
+    async function selectModule(module) {
+      selectedModule = module;
+      document.getElementById("page-title").innerText = `Deploy: ${module.toUpperCase()}`;
+
+      const res = await fetch(`http://127.0.0.1:5000/modules/${module}/variables`);
+      const variables = await res.json();
+      const form = document.getElementById("module-form");
+      form.innerHTML = "";
+
+      variables.forEach(v => {
+        const label = document.createElement("label");
+        label.textContent = `${v.name} (${v.type})`;
+
+        const input = document.createElement("input");
+        input.name = v.name;
+        input.required = true;
+        input.title = v.description || "";
+        input.type = v.type === "number" ? "number" : "text";
+        if (v.default !== null) input.value = v.default;
+
+        form.appendChild(label);
+        form.appendChild(input);
+      });
+
+      setStatus("");
+      clearConsoles();
+    }
+
+    async function submitForm() {
+      if (!selectedModule) return alert("Please select a module first");
+
+      const formEl = document.getElementById("module-form");
+      if (!formEl.reportValidity()) return;
+
+      setStatus("Saving...");
+      const form = new FormData(formEl);
+      const data = {};
+      for (const [key, val] of form.entries()) {
+        data[key] = isNaN(val) ? val : Number(val);
+      }
+
+      try {
+        await fetch(`http://127.0.0.1:5000/modules/${selectedModule}/configure`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data)
+        });
+        setStatus("Configuration saved!");
+      } catch {
+        setStatus("Failed to save.");
+      }
+    }
+
+    function startStream(step) {
+      if (!selectedModule) return alert("Please select a module first");
+
+      const output = document.getElementById(`console-${step}`);
+      output.innerText = "";
+      setStatus(`Running terraform ${step}...`);
+      updateProgressBar(0);
+
+      const source = new EventSource(`http://127.0.0.1:5000/stream/${selectedModule}/${step}`);
+      let chunkCount = 0;
+
+      source.onmessage = (e) => {
+        output.innerText += e.data + "\n";
+        output.scrollTop = output.scrollHeight;
+        chunkCount++;
+        updateProgressBar(Math.min(90, chunkCount * 5));
+      };
+
+      source.addEventListener("done", () => {
+        setStatus(`Terraform ${step} complete.`);
+        updateProgressBar(100);
+        source.close();
+      });
+
+      source.onerror = () => {
+        output.innerText += "\n[ERROR connecting to stream]";
+        setStatus("Stream failed.");
+        updateProgressBar(0);
+        source.close();
+      };
+    }
+
+    function updateProgressBar(percent) {
+      document.getElementById("progress-fill").style.width = `${percent}%`;
+    }
+
+    function clearConsoles() {
+      ["init", "plan", "apply"].forEach(id => {
+        document.getElementById(`console-${id}`).innerText = "";
+      });
+      updateProgressBar(0);
+    }
+
+    function setStatus(msg) {
+      document.getElementById("status").innerText = msg;
+    }
+
+    window.onload = loadModules;
+  </script>
+</body>
+</html>
